@@ -192,11 +192,15 @@ The draft-invoice workflow is deployed and intended for continued weekly operati
 | `Weekly Bins` | Bin-to-customer mapping and verification |
 | `Square Invoice Log` | Invoice status, identifiers, processing history, and review notes |
 
+
 ## Project structure
 
+```
 Bee-s-Boutique-Order-Invoice-Automation/
 ├── README.md
 └── WORKFLOW.md
+```
+  
 
 **Source code note:** This public portfolio package documents the architecture and verified results; it does **not** include an export of the full private production Apps Script. It is not a ready-to-deploy application.
 
