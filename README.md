@@ -194,14 +194,9 @@ The draft-invoice workflow is deployed and intended for continued weekly operati
 
 ## Project structure
 
-```text
-bee-boutique-invoice-automation/
+Bee-s-Boutique-Order-Invoice-Automation/
 ├── README.md
-├── docs/
-│   ├── WORKFLOW.md
-│   └── SKILLS_AND_RESUME.md
-└── .gitignore
-```
+└── WORKFLOW.md
 
 **Source code note:** This public portfolio package documents the architecture and verified results; it does **not** include an export of the full private production Apps Script. It is not a ready-to-deploy application.
 
