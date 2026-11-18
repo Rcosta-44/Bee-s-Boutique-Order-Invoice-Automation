@@ -1,204 +1,228 @@
-
 # Bee's Boutique Invoice Automation
 
-**Technologies:** JavaScript, Google Apps Script, Google Sheets, Square API
+**JavaScript · Google Apps Script · Google Sheets · Square REST API · JSON**
 
-**Status:** Sandbox testing successful | Production rollout pending
+**Status:** In active production use for weekly draft-invoice processing | Square Sandbox testing completed | Bulk email publishing developed but not yet production-validated
 
 ## Overview
 
-This project automates the weekly invoicing process for Bee's Boutique, a retail business that manages approximately 200 customer orders per week.
+I developed a Google Sheets and Google Apps Script workflow to streamline weekly invoicing for **Bee's Boutique**, a retail business processing roughly 200 customer invoices in a busy week. The system organizes live-sale claims, verifies customer mappings, performs preflight checks, creates Square orders and **draft** invoices, and records processing results for review.
 
-The system uses Google Sheets to organize customer purchases and Google Apps Script to communicate with the Square API. It validates purchase records, matches customers to their Square accounts, and creates draft invoices in batches.
+The system is now part of Bee's Boutique's ongoing weekly invoicing workflow. It replaces repetitive manual invoice preparation with a controlled, auditable process while reducing the risk of incorrect customer billing, duplicate orders, and lost work after an API failure.
 
-The goal is to reduce the time spent preparing invoices manually while maintaining accurate records and preventing duplicate billing.
+### Production results
 
-## How It Works
+| Metric | Observed result |
+|---|---:|
+| Draft invoices created in a completed weekly cycle | **188** |
+| Drafts created before automatic continuation was started | 52 |
+| Drafts created by the automatic continuation workflow | **136** |
+| Automatic continuation batches | **6** |
+| Maximum invoices per creation batch | 25 |
+| Final batch-controller status | **COMPLETE** |
 
-The automation follows a weekly invoicing workflow:
+These metrics document the first verified full production cycle. Bee's Boutique plans to continue using the draft-invoice automation as part of its regular weekly operations. The draft-creation workflow does **not** automatically publish or email invoices.
 
-1. Customer purchase records are imported into Google Sheets.
-2. Claims are reviewed and organized by customer bin number.
-3. Each bin is matched to a Square customer ID.
-4. A preflight check identifies customers ready for invoicing.
-5. Approved orders are processed in batches of up to 25 customers.
-6. The Square API creates orders and draft invoices.
-7. Invoice IDs, statuses, and processing details are recorded in Google Sheets.
-8. Completed weekly records can be archived before starting a new billing cycle.
+## The business problem
 
-Invoices remain in draft status for review. The automation does not automatically publish or send invoices to customers.
+During live sales, customers claim products using assigned bin numbers. A bin may appear multiple times under the same product, indicating additional quantity, and the same bin can appear under different products. The business needs to aggregate claims correctly, match bins to verified Square customers, and create accurate invoices without processing the same customer twice.
 
-## Features
+Manually reconciling hundreds of line items and creating individual invoices was time-consuming and exposed the workflow to data-entry and duplicate-billing errors.
 
-### Batch Invoice Processing
+## How it works
 
-The system processes up to 25 customers per execution.
+1. **Import claims:** Load product, price, bin, quantity, week, and live-date records into Google Sheets.
+2. **Normalize quantities:** Add repeated claims for the **same product and bin**; retain separate lines for different products.
+3. **Review records:** Check claim status, totals, identifiers, and entries requiring attention.
+4. **Match customers:** Use verified Square customer IDs linked to the appropriate bins.
+5. **Run preflight validation:** Classify records as **Ready**, **Already Logged**, or **Needs Review**.
+6. **Create drafts:** Create Square orders and draft invoices in batches of up to **25**.
+7. **Record results:** Store invoice/order identifiers, status, and processing information in a dedicated invoice log.
+8. **Continue automatically:** A time-driven trigger starts the next batch while eligible records remain.
+9. **Complete or stop safely:** Mark the run **COMPLETE** when no eligible invoices remain, or stop for reconciliation when an error or unfinished transaction is detected.
+10. **Send separately:** Publishing/emailing is a distinct, manually approved workflow; its production rollout is **not yet complete**.
 
-Each subsequent execution checks the invoice log and processes the next group of eligible customers.
+## System architecture
 
-This approach helps manage Google Apps Script execution limits while supporting larger weekly workloads.
+```mermaid
+flowchart TD
+    A[Live-sale claims] --> B[Google Sheets: Import Claims]
+    B --> C[Normalize quantities and review]
+    C --> D[Verified customer / bin matching]
+    D --> E{Preflight validation}
+    E -- Needs review --> F[Manual correction]
+    E -- Already logged --> G[Skip duplicate]
+    E -- Ready --> H[Weekly batch controller]
+    H --> I[Square Orders API]
+    I --> J[Square Draft Invoices API]
+    J --> K[Square Invoice Log]
+    K --> L{More eligible records?}
+    L -- Yes --> M[Schedule next trigger]
+    M --> H
+    L -- No --> N[COMPLETE]
+    J -. Separate approval and testing required .-> O[Invoice publish / email]
+```
 
-For a typical week of 200 customers, the system is designed to process the workload across approximately eight batches.
+## Features and technical implementation
 
-### Duplicate Prevention
+### 1. Controlled batch processing
 
-To reduce the risk of duplicate invoices, the automation:
+- Limits invoice creation to **25 customers per execution**.
+- Uses Google Apps Script time-driven triggers for continuation.
+- Persists the week, created count, batch count, and controller state in **Script Properties**.
+- Uses the states `RUNNING`, `PROCESSING`, `COMPLETE`, and `STOPPED` to monitor progress.
+- Checks the invoice log again before subsequent work rather than assuming earlier results.
 
-- Checks the billing week and Square customer ID against existing invoice records.
-- Skips customers who have already been logged.
-- Records a reservation before making invoice-creation requests.
-- Uses idempotency keys when communicating with Square.
-- Preserves incomplete transactions for reconciliation before retrying.
+### 2. Duplicate prevention and transaction safety
 
-### Preflight Validation
+- Checks the **billing week + Square customer ID** against previously logged activity.
+- Uses Square API **idempotency keys** to reduce duplicate operations.
+- Records intermediate states such as `RESERVED` and `ORDER_CREATED` so uncertain outcomes can be reconciled.
+- Blocks continued batch processing when unfinished invoice-log entries require investigation.
+- Uses Apps Script locking to limit overlapping operations.
 
-Before invoice creation, the system checks customer and purchase information.
+These controls **reduce risk**, but cannot guarantee exactly-once processing during every possible network or API failure; manual reconciliation remains important.
 
-Customers are categorized as:
+### 3. Preflight validation
 
-- **Ready:** Eligible for draft invoice creation.
-- **Already Logged:** Previously processed or reserved for the billing week.
-- **Needs Review:** Requires attention before invoicing.
-
-This allows issues to be identified before submitting requests to Square.
-
-### Invoice Tracking
-
-A dedicated Google Sheets invoice log records:
-
-- Billing week
-- Customer ID
-- Bin number
-- Square invoice ID
-- Square order ID
-- Invoice status
-- Order total
-- Creation timestamp
-- Processing notes
-- Idempotency keys
-
-The log supports duplicate checking, troubleshooting, and tracking invoice activity.
-
-### Error Handling
-
-The automation includes safeguards for failed API requests and interrupted executions.
-
-If an invoice request fails or its outcome is uncertain, the system preserves the reservation rather than automatically retrying.
-
-Unresolved transactions must be reconciled before another attempt is made.
-
-### Environment Controls
-
-The project uses separate Square Sandbox and production configurations.
-
-Additional safeguards include:
-
-- Environment validation
-- Authorized spreadsheet verification
-- A configurable invoice-creation lock
-- Script execution locking
-- Draft-only invoice creation
-- API credentials stored in Google Apps Script properties
-
-Production invoice creation remains disabled until explicitly enabled.
-
-## Technologies Used
-
-| Technology | Purpose |
+| Classification | Meaning |
 |---|---|
-| JavaScript | Automation logic and data processing |
-| Google Apps Script | Spreadsheet automation and API requests |
-| Google Sheets | Customer data, purchase records, and invoice tracking |
-| Square API | Customer management, order creation, and draft invoicing |
-| REST API / JSON | Communication and data exchange with Square |
-| GitHub | Version control and project documentation |
+| **Ready** | Eligible for draft creation |
+| **Already Logged** | Previously recorded for the billing week; excluded from new creation |
+| **Needs Review** | Missing, inconsistent, or unverified information requires attention |
 
-## Testing
+The workflow verifies customer mappings and checks the existing invoice log before creating financial records.
 
-Development and testing were performed using Square Sandbox to avoid affecting live customer accounts.
+### 4. Invoice logging and monitoring
 
-### Batch Processing Test
+The Google Sheets **Square Invoice Log** supports tracking of billing week, customer/bin association, Square order and invoice IDs, status, timestamps, notes, and reconciliation information. Apps Script execution logs provide additional visibility into API failures, batch counts, and completion.
 
-A test environment was configured with 30 simulated customers, each assigned a unique bin number and Square Sandbox customer ID.
+### 5. Draft-first financial workflow
 
-Each customer was given a sample purchase to verify the complete invoicing workflow.
+Automatic creation produces **draft invoices only**. A separate function, `beeSendAllWeeklyInvoices`, was developed to preview, update due dates, and publish email-delivered invoices in bounded batches, but **bulk sending has not been fully validated in production** and is not part of the automatic draft-creation run.
 
-| Test | Result |
+## Technology stack
+
+| Technology | How I used it |
 |---|---|
-| First batch | 25 draft invoices created |
-| Second batch | 5 draft invoices created |
-| Total | 30 draft invoices created |
-| Invoice logging | All 30 recorded as DRAFT |
-| Final preflight | 0 customers ready |
-| Duplicate recognition | All 30 test customers recognized as already processed |
-| Customers needing review | 0 |
+| **JavaScript** | Data transformations, validation, control flow, error handling |
+| **Google Apps Script** | Spreadsheet menus, time-driven triggers, locks, Script Properties, API calls |
+| **Google Sheets** | Claims intake, review, customer mappings, formulas, invoice audit trail |
+| **Square REST API** | Customer lookup, order creation, draft invoice management |
+| **REST / JSON** | HTTP methods, request payloads, API responses, state serialization |
+| **GitHub** | Technical documentation and iterative project history |
 
-### Test Results
+## Testing and validation
 
-The 30-customer test successfully demonstrated that:
+### Square Sandbox tests
 
-- Draft invoices can be created through the Square API.
-- The system processes customers across multiple executions.
-- Previously processed customers are excluded from subsequent batches.
-- Invoice details are recorded in Google Sheets.
-- The final preflight identifies no remaining eligible customers.
-- No invoices were published or sent.
+Before production deployment, the workflow was tested with **30 simulated customers**, each assigned a unique bin and Square Sandbox customer ID.
 
-The final preflight reported:
+| Sandbox check | Result |
+|---|---|
+| First invoice batch | 25 draft invoices |
+| Second invoice batch | 5 draft invoices |
+| Total new test drafts | **30** |
+| Invoice log | All 30 recorded as `DRAFT` |
+| Final preflight | 0 ready; 36 already logged (including 6 earlier test records); 0 needs review |
+| Customer email publishing | Not performed |
 
-- **Ready:** 0
-- **Already Logged:** 36 (30 new test customers and 6 earlier test records)
-- **Needs Review:** 0
+The sandbox tests validated API integration, bounded batch processing, logging, and duplicate recognition. These figures are historical test results and are separate from the production run below.
 
-The 25-customer batch limit was successfully tested. A full 200-customer production workload has not yet been completed.
+### Production deployment
 
-## Project Structure
+After troubleshooting and controlled manual runs, the production system created **188 draft invoices** for one weekly cycle. Of these, **52** were created before enabling automatic continuation, and **136** were created across **six automatically scheduled batches**. The controller ultimately reported `COMPLETE`.
 
-The Google Sheets workbook includes several components:
+The draft-invoice workflow is deployed and intended for continued weekly operational use, with ongoing maintenance and incremental improvements. The separate bulk email/publish workflow is **not yet production-validated**.
+
+## Problems I investigated and resolved
+
+**Square invoice API validation:** Corrected an unsupported `accepted_payment_methods.square_ach` field that caused invoice creation requests to fail.
+
+**Due-date constraints:** Diagnosed Square's rejection when an invoice due date preceded its scheduled date; corrected the date for the tested production cycle. **Dynamic Friday date calculation remains planned.**
+
+**Partial transaction recovery:** Recovered a case where a Square order existed but invoice creation failed, avoiding a blind duplicate-order retry.
+
+**Multi-execution automation:** Implemented trigger-based continuation and persistent state to process a full weekly workload without manually starting each batch.
+
+**Google Sheets date types:** Resolved an import failure caused by a Week ID interpreted as a date instead of the required `YYYY-MM-DD` text value.
+
+**Quantity normalization:** Combined repeated claims for the same bin and product while preserving distinct product lines and explicit `x 2`, `x 3`, etc. quantities.
+
+## Representative Apps Script functions
+
+| Function | Responsibility |
+|---|---|
+| `importClaims` | Import claims into the workflow |
+| `preflightMainWeeklyInvoices` | Evaluate weekly invoice readiness |
+| `beeProductionVerifiedInvoicePreflight` | Apply production customer-verification checks |
+| `createWeeklyDraftInvoices` | Create one bounded batch of Square drafts |
+| `beeCreateAllWeeklyDrafts` | Start the weekly controller from a Google Sheets menu |
+| `beeContinueWeeklyDrafts` | Process and schedule subsequent batches |
+| `beeWeeklyBatchStatus` | Inspect the controller's persisted state |
+| `beePreviewWeeklyInvoiceEmails` | Preview potential publish/email candidates without sending |
+| `beeSendAllWeeklyInvoices` | Separate bulk publish/email function; further testing required |
+
+## Security and operational safeguards
+
+- Separate Square **Sandbox** and **production** environments.
+- Production verification and explicit confirmation before creating real financial records.
+- Restricted API credentials stored in Apps Script properties rather than committed to GitHub.
+- Draft-only automatic creation; customer-facing sending is separate.
+- Validation of customer identities and invoice eligibility.
+- Locks, idempotency keys, status logging, and stop-on-error behavior.
+- No customer names, email addresses, Square IDs, access tokens, or production transaction exports in this public portfolio package.
+
+## Skills demonstrated
+
+**IT / systems administration:** Business process automation, scheduled jobs, operational monitoring, troubleshooting, incident recovery, and documentation.
+
+**Programming / integration:** JavaScript, REST APIs, JSON, HTTP request debugging, validation, exception handling, and stateful batch orchestration.
+
+**Data integrity / security mindset:** Least-exposure documentation, secret handling, duplicate-prevention controls, audit logs, and risk-aware approval gates for financial actions.
+
+**Professional practice:** Translating business requirements into technical workflows, sandbox testing, incremental production rollout, and communicating results through clear technical documentation.
+
+## Google Sheets components
 
 | Sheet | Purpose |
 |---|---|
-| Import Claims | Initial customer purchase imports |
-| Live Claims | Active purchase records used for invoicing |
-| Weekly Bins | Customer bin numbers and Square customer mappings |
-| Square Invoice Log | Invoice statuses, identifiers, and processing history |
+| `Import Claims` | Staging area for incoming claims |
+| `Live Claims` | Active purchase records |
+| `Weekly Bins` | Bin-to-customer mapping and verification |
+| `Square Invoice Log` | Invoice status, identifiers, processing history, and review notes |
 
-Google Apps Script handles validation, API communication, invoice creation, and weekly workflow management.
+## Project structure
 
-## Development Progress
+```text
+bee-boutique-invoice-automation/
+├── README.md
+├── docs/
+│   ├── WORKFLOW.md
+│   └── SKILLS_AND_RESUME.md
+└── .gitignore
+```
 
-### Completed
+**Source code note:** This public portfolio package documents the architecture and verified results; it does **not** include an export of the full private production Apps Script. It is not a ready-to-deploy application.
 
-- [x] Set up the Google Sheets invoicing structure
-- [x] Connect Google Apps Script to the Square API
-- [x] Implement customer matching
-- [x] Implement preflight validation
-- [x] Build automated draft invoice creation
-- [x] Add invoice logging
-- [x] Add duplicate-prevention safeguards
-- [x] Implement 25-customer batch processing
-- [x] Create and configure Sandbox test customers
-- [x] Successfully process 30 draft invoices across two batches
-- [x] Verify invoice statuses and final preflight results
-- [x] Configure production safety controls
+## Ongoing operations and maintenance
 
-### Remaining
+Bee's Boutique will continue using this system for weekly claim processing and draft invoice creation. Ongoing responsibilities include reviewing preflight exceptions, reconciling invoice logs with Square, monitoring scheduled executions, and maintaining the integration as business needs change. Production improvements will be tested before release, particularly changes that affect customer billing or invoice delivery.
 
-- [ ] Validate the updated non-blocking batch notification
-- [ ] Complete the first full production invoicing cycle
-- [ ] Test performance with approximately 200 weekly customers
-- [ ] Improve automated recovery for interrupted invoice requests
-- [ ] Evaluate automatic execution of consecutive batches
+## Roadmap
 
-## Current Status
+- [x] Build claim intake and customer matching workflow
+- [x] Integrate Square customer, order, and draft invoice APIs
+- [x] Implement preflight checks, invoice logging, and duplicate safeguards
+- [x] Validate 30-customer batch processing in Sandbox
+- [x] Complete a full production draft-invoice cycle
+- [x] Automate continuation across multiple batches
+- [ ] Calculate each week's due date dynamically
+- [ ] Fully test and approve the separate bulk publish/email workflow
+- [ ] Add a safe Google Sheets action for sending approved invoices
+- [ ] Strengthen reconciliation and automated tests with synthetic data
+- [ ] Add sanitized screenshots or sample code to demonstrate implementation
 
-**Sandbox testing successful. Production rollout pending.**
+## What I learned
 
-The system has successfully created 30 draft invoices across two batches using Square Sandbox.
-
-Batch processing, invoice logging, and recognition of previously processed customers have been verified.
-
-The production workflow is configured with safety controls and will be tested with real weekly customer orders before full deployment.
-
-
-The long-term goal is a reliable invoicing workflow that can process approximately 200 customers per week with minimal manual intervention.
+This project gave me hands-on experience turning a real business bottleneck into a working technical system. I learned to debug external API errors, design safer retries around partially completed financial transactions, build reliable multi-run automations, and validate results in both test and production environments. These are transferable skills for **IT support, systems administration, cloud operations, and security-focused technical roles**.
